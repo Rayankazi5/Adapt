@@ -11,10 +11,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Button } from '../ui/button';
-import { PenLine, Scan, Loader2, Sparkles } from 'lucide-react';
+import { PenLine, Scan, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { FoodEntry, MealLog } from '../../pages/CalorieTracking';
 import { AIFoodScanner } from './AIFoodScanner';
+import { BarcodeScanner } from './BarcodeScanner';
 import { getNutritionByLabel, getAllFoodNames } from '../../data/foodNutritionData';
 
 interface AddFoodDialogProps {
@@ -36,8 +37,6 @@ export function AddFoodDialog({ open, onOpenChange, onFoodAdded, mealType }: Add
   });
 
 
-  const [barcode, setBarcode] = useState('');
-  const [isScanning, setIsScanning] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
 
   // Auto-calculate macros when food name, amount, or unit change
@@ -88,22 +87,42 @@ export function AddFoodDialog({ open, onOpenChange, onFoodAdded, mealType }: Add
       protein = Math.round(nutrition.protein * scale);
       carbs = Math.round(nutrition.carbs * scale);
       fats = Math.round(nutrition.fats * scale);
+
+      onFoodAdded({
+        name: manualEntry.name,
+        calories,
+        protein,
+        carbs,
+        fats,
+        time: new Date().toTimeString().slice(0, 5),
+        vitamin_a: nutrition.vitamin_a ? (nutrition.vitamin_a * scale) : 0,
+        vitamin_b1: nutrition.vitamin_b1 ? (nutrition.vitamin_b1 * scale) : 0,
+        vitamin_b2: nutrition.vitamin_b2 ? (nutrition.vitamin_b2 * scale) : 0,
+        vitamin_b3: nutrition.vitamin_b3 ? (nutrition.vitamin_b3 * scale) : 0,
+        vitamin_b6: nutrition.vitamin_b6 ? (nutrition.vitamin_b6 * scale) : 0,
+        vitamin_b9: nutrition.vitamin_b9 ? (nutrition.vitamin_b9 * scale) : 0,
+        vitamin_b12: nutrition.vitamin_b12 ? (nutrition.vitamin_b12 * scale) : 0,
+        vitamin_c: nutrition.vitamin_c ? (nutrition.vitamin_c * scale) : 0,
+        vitamin_d: nutrition.vitamin_d ? (nutrition.vitamin_d * scale) : 0,
+        vitamin_e: nutrition.vitamin_e ? (nutrition.vitamin_e * scale) : 0,
+        vitamin_k: nutrition.vitamin_k ? (nutrition.vitamin_k * scale) : 0,
+      });
     } else {
       // Fallback: use manually entered macros, estimate calories from macros
       protein = Number(manualEntry.protein) || 0;
       carbs = Number(manualEntry.carbs) || 0;
       fats = Number(manualEntry.fats) || 0;
       calories = (protein * 4) + (carbs * 4) + (fats * 9);
-    }
 
-    onFoodAdded({
-      name: manualEntry.name,
-      calories,
-      protein,
-      carbs,
-      fats,
-      time: new Date().toTimeString().slice(0, 5),
-    });
+      onFoodAdded({
+        name: manualEntry.name,
+        calories,
+        protein,
+        carbs,
+        fats,
+        time: new Date().toTimeString().slice(0, 5),
+      });
+    }
 
     // Reset form
     setManualEntry({
@@ -120,33 +139,6 @@ export function AddFoodDialog({ open, onOpenChange, onFoodAdded, mealType }: Add
   };
 
 
-
-  const handleBarcodeSubmit = async () => {
-    if (!barcode) {
-      toast.error('Please enter a barcode');
-      return;
-    }
-
-    setIsScanning(true);
-
-    // Simulate barcode lookup
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-
-    // Mock barcode result
-    const mockBarcodeResult = {
-      name: 'Product from Barcode ' + barcode,
-      calories: 280,
-      protein: 20,
-      carbs: 25,
-      fats: 10,
-      time: new Date().toTimeString().slice(0, 5),
-    };
-
-    onFoodAdded(mockBarcodeResult);
-    setBarcode('');
-    setIsScanning(false);
-    toast.success('Product found! Food added.');
-  };
 
   const mealLabels = {
     breakfast: 'Breakfast',
@@ -289,58 +281,11 @@ export function AddFoodDialog({ open, onOpenChange, onFoodAdded, mealType }: Add
 
           {/* Barcode Scanner */}
           <TabsContent value="barcode" className="space-y-4 mt-4">
-            <div className="p-4 bg-accent rounded-lg space-y-2">
-              <h4 className="font-medium text-sm flex items-center gap-2">
-                <Scan className="size-4" />
-                Barcode Scanner
-              </h4>
-              <p className="text-sm text-muted-foreground">
-                Scan product barcodes to instantly get nutritional information.
-                This is a mock feature for demonstration.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="barcode">Enter Barcode Number</Label>
-              <Input
-                id="barcode"
-                placeholder="e.g., 1234567890123"
-                value={barcode}
-                onChange={(e) => setBarcode(e.target.value)}
-                disabled={isScanning}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label>Or Use Camera to Scan</Label>
-              <div className="border-2 border-dashed rounded-lg p-8 text-center">
-                <Scan className="size-12 mx-auto text-muted-foreground mb-2" />
-                <p className="text-sm text-muted-foreground">
-                  Click to activate camera scanner
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  (Mock feature - not functional in demo)
-                </p>
-              </div>
-            </div>
-
-            <Button
-              onClick={handleBarcodeSubmit}
-              className="w-full"
-              disabled={isScanning || !barcode}
-            >
-              {isScanning ? (
-                <>
-                  <Loader2 className="size-4 mr-2 animate-spin" />
-                  Looking up...
-                </>
-              ) : (
-                <>
-                  <Scan className="size-4 mr-2" />
-                  Look Up Product
-                </>
-              )}
-            </Button>
+            <BarcodeScanner 
+              onFoodRecognized={(food) => {
+                onFoodAdded(food);
+              }}
+            />
           </TabsContent>
         </Tabs>
       </DialogContent>

@@ -149,6 +149,8 @@ const IMAGENET_LABELS: Record<number, string> = {
 
 // ─── Load Models ────────────────────────────────────────────
 
+const INDEXEDDB_URL = 'indexeddb://food-classifier-custom-v1';
+
 export async function loadModel(): Promise<boolean> {
     if (customModel) return true;
     if (isModelLoading) {
@@ -163,13 +165,25 @@ export async function loadModel(): Promise<boolean> {
     }
 
     isModelLoading = true;
+    
+    // 1. Try to load from IndexedDB (user-trained model)
     try {
-        customModel = await tf.loadLayersModel(CUSTOM_MODEL_URL);
-        console.log('✅ Custom food classifier model loaded');
+        customModel = await tf.loadLayersModel(INDEXEDDB_URL);
+        console.log('✅ Loaded user-trained model from IndexedDB');
         isModelLoading = false;
         return true;
-    } catch {
-        console.warn('⚠️ Custom model not found, will use MobileNet fallback');
+    } catch (e) {
+        console.log('ℹ️ No user-trained model found in IndexedDB, falling back to static model');
+    }
+
+    // 2. Try to load from Static URL (project model)
+    try {
+        customModel = await tf.loadLayersModel(CUSTOM_MODEL_URL);
+        console.log('✅ Loaded static project model');
+        isModelLoading = false;
+        return true;
+    } catch (e) {
+        console.warn('⚠️ Static custom model not found at', CUSTOM_MODEL_URL);
         isModelLoading = false;
         return false;
     }
@@ -215,55 +229,66 @@ export async function classifyImage(
 async function classifyWithCustomModel(
     imgElement: HTMLImageElement | HTMLCanvasElement
 ): Promise<ClassificationResult[]> {
+    // Check Image Memory First!
+    const fingerprint = getVisualFingerprint(imgElement);
+    const memoryMatch = findMemoryMatch(fingerprint);
+
+    if (memoryMatch) {
+        console.log(`🧠 Image Memory Match Found! Distance: ${memoryMatch.distance}`);
+        const nutrition = getNutritionByLabel(memoryMatch.label);
+        console.log(`Diagnostic: memoryMatch.label = '${memoryMatch.label}', nutrition =`, nutrition);
+        const multiplierResult = estimatePortionMultiplier(imgElement, memoryMatch.label);
+        return [{
+            label: memoryMatch.label,
+            displayName: nutrition?.displayName || formatFoodLabel(memoryMatch.label),
+            confidence: 0.99,
+            nutrition,
+            estimatedMultiplier: multiplierResult.multiplier,
+            estimatedGrams: multiplierResult.estimatedGrams
+        }];
+    }
+
     const inputTensor = preprocessImage(imgElement);
     const predictions = customModel!.predict(inputTensor) as tf.Tensor;
-    const probabilities = await predictions.data();
+    const [probabilitiesData, visualScores] = await Promise.all([
+        predictions.data(),
+        getVisualFeatureScores(imgElement, fingerprint)
+    ]);
+    const probabilities = Array.from(probabilitiesData);
     inputTensor.dispose();
     predictions.dispose();
 
-    const scores = new Map<string, number>();
-    for (let i = 0; i < probabilities.length; i++) {
-        scores.set(CLASS_LABELS[i], probabilities[i]);
-    }
-
-    const [mobilenetScores, visualScores] = await Promise.all([
-        getMobileNetScores(imgElement),
-        getVisualFeatureScores(imgElement)
-    ]);
-
+    const outputSize = probabilities.length;
     const finalScores = new Map<string, number>();
-    for (const label of CLASS_LABELS) {
-        const customProb = scores.get(label) || 0;
-        const visScore = visualScores[label] || 0;
-        const mnScore = mobilenetScores[label] || 0;
 
-        if (label === 'dahi vada') {
-            finalScores.set(label, customProb * 0.2 + visScore * 0.4 + mnScore * 0.4);
+    // Calculate max model confidence to determine uncertainty
+    let maxModelProb = 0;
+    for (const p of probabilities) {
+        if (p > maxModelProb) maxModelProb = p;
+    }
+    
+    // When the model is uncertain (e.g., after being taught an extended class),
+    // we boost the power of visual heuristics for those extended classes.
+    const uncertaintyBoost = Math.max(0, 1.0 - maxModelProb);
+
+    for (let i = 0; i < CLASS_LABELS.length; i++) {
+        const label = CLASS_LABELS[i];
+        const modelProb = i < outputSize ? probabilities[i] : 0;
+        const visualProb = visualScores[label] || 0;
+
+        let combined = 0;
+        if (i < outputSize) {
+            // For known classes (<= 101), trust the model heavily, with a dash of visual features
+            combined = (modelProb * 0.85) + (visualProb * 0.15);
         } else {
-            finalScores.set(label, customProb * 0.7 + visScore * 0.15 + mnScore * 0.15);
+            // For extended classes (Indian foods), the NN has no output neuron.
+            // They rely on visual features, scaled by how uncertain the NN is about the known classes.
+            combined = visualProb * uncertaintyBoost;
         }
+
+        finalScores.set(label, combined);
     }
 
-    const dvVis = visualScores['dahi vada'] || 0;
-    const dvMn = mobilenetScores['dahi vada'] || 0;
-    const chaatProb = finalScores.get('chaat') || 0;
-    const meduProb = finalScores.get('meduvadai') || 0;
-    const idlyProb = finalScores.get('idly') || 0;
-
-    // Detect white/light pixel ratio as an additional heuristic
-    const lightCheck = estimatePortionMultiplier(imgElement);
-    const isVeryLightImage = lightCheck.lightPixelRatio > 0.4;
-
-    // Aggressive override: If visual match is decent OR it's a very light image with some mobilenet/visual backing
-    if (chaatProb > 0.15 || meduProb > 0.15 || idlyProb > 0.15 || dvVis > 0.3 || dvMn > 0.1) {
-        if (dvVis > 0.2 || dvMn > 0.05 || isVeryLightImage) {
-            const shiftAmount = (chaatProb + meduProb + idlyProb);
-            finalScores.set('dahi vada', (finalScores.get('dahi vada') || 0) + shiftAmount + (isVeryLightImage ? 1.0 : 0.8));
-            finalScores.set('chaat', chaatProb * 0.01);
-            finalScores.set('meduvadai', meduProb * 0.01);
-            finalScores.set('idly', idlyProb * 0.01);
-        }
-    }
     const sortedLabels = Array.from(finalScores.keys()).sort((a, b) => finalScores.get(b)! - finalScores.get(a)!);
     const topLabel = sortedLabels[0] || '';
     const multiplierResult = estimatePortionMultiplier(imgElement, topLabel);
@@ -276,7 +301,7 @@ async function classifyWithCustomModel(
         const labelResult = label === topLabel ? multiplierResult : estimatePortionMultiplier(imgElement, label);
         results.push({
             label,
-            displayName: nutrition?.displayName || label,
+            displayName: nutrition?.displayName || formatFoodLabel(label),
             confidence: prob,
             nutrition,
             estimatedMultiplier: multiplier,
@@ -291,15 +316,40 @@ async function classifyWithCustomModel(
     return results;
 }
 
+// Format a snake_case food label into a display name
+function formatFoodLabel(label: string): string {
+    return label
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase());
+}
+
 // ─── MobileNet + Visual Features Fallback ───────────────────
 
 async function classifyWithMobileNetFallback(
     imgElement: HTMLImageElement | HTMLCanvasElement
 ): Promise<ClassificationResult[]> {
+    // Check Image Memory First!
+    const fingerprint = getVisualFingerprint(imgElement);
+    const memoryMatch = findMemoryMatch(fingerprint);
+
+    if (memoryMatch) {
+         console.log(`🧠 Image Memory Match Found (Fallback)! Distance: ${memoryMatch.distance}`);
+         const nutrition = getNutritionByLabel(memoryMatch.label);
+         const multiplierResult = estimatePortionMultiplier(imgElement, memoryMatch.label);
+         return [{
+             label: memoryMatch.label,
+             displayName: nutrition?.displayName || formatFoodLabel(memoryMatch.label),
+             confidence: 0.99,
+             nutrition,
+             estimatedMultiplier: multiplierResult.multiplier,
+             estimatedGrams: multiplierResult.estimatedGrams
+         }];
+    }
+
     // Run MobileNet and visual analysis in parallel
     const [mobilenetScores, visualScores] = await Promise.all([
         getMobileNetScores(imgElement),
-        getVisualFeatureScores(imgElement),
+        getVisualFeatureScores(imgElement, fingerprint),
     ]);
 
     // Combine: 60% MobileNet, 40% visual features
@@ -400,11 +450,18 @@ async function getMobileNetScores(
     return scores;
 }
 
-// ─── Visual Feature Analysis ────────────────────────────────
+// ─── Visual Feature Analysis & Memory ───────────────────────
 
-async function getVisualFeatureScores(
-    imgElement: HTMLImageElement | HTMLCanvasElement
-): Promise<Record<string, number>> {
+export interface VisualFingerprint {
+    avgHue: number;
+    avgSat: number;
+    avgLight: number;
+    colorVariance: number;
+    textureDensity: number;
+    roundness: number;
+}
+
+export function getVisualFingerprint(imgElement: HTMLImageElement | HTMLCanvasElement): VisualFingerprint {
     const canvas = document.createElement('canvas');
     const SIZE = 64;
     canvas.width = SIZE;
@@ -454,6 +511,71 @@ async function getVisualFeatureScores(
     const centerLight = mean(centerPixels.map(p => p.l));
     const edgeLight = mean(edgePixels.map(p => p.l));
     const roundness = Math.min(1, Math.max(0, (centerLight - edgeLight + 0.2) * 2));
+
+    return { avgHue, avgSat, avgLight, colorVariance, textureDensity, roundness };
+}
+
+// Memory persistence for exact user photo corrections
+const IMAGE_MEMORY_KEY = 'adaptify_image_memory';
+interface ImageMemoryEntry {
+    fingerprint: VisualFingerprint;
+    label: string;
+    timestamp: number;
+}
+
+export function saveImageCorrection(imgElement: HTMLImageElement | HTMLCanvasElement, label: string) {
+    const fingerprint = getVisualFingerprint(imgElement);
+    const canonicalLabel = getCanonicalFoodId(label);
+    try {
+        const store: ImageMemoryEntry[] = JSON.parse(localStorage.getItem(IMAGE_MEMORY_KEY) || '[]');
+        // Don't add duplicate exact same memories
+        const duplicate = store.find(e => circularDistance(e.fingerprint.avgHue, fingerprint.avgHue, 360) < 1 
+            && Math.abs(e.fingerprint.avgSat - fingerprint.avgSat) < 0.01);
+        if (!duplicate) {
+            store.push({ fingerprint, label: canonicalLabel, timestamp: Date.now() });
+            if (store.length > 50) store.shift(); // Keep last 50
+            localStorage.setItem(IMAGE_MEMORY_KEY, JSON.stringify(store));
+        }
+    } catch (e) {
+        console.warn('Failed to save image correction:', e);
+    }
+}
+
+export function findMemoryMatch(fingerprint: VisualFingerprint): { label: string, distance: number } | null {
+    try {
+        const store: ImageMemoryEntry[] = JSON.parse(localStorage.getItem(IMAGE_MEMORY_KEY) || '[]');
+        if (store.length === 0) return null;
+
+        let bestMatch = null;
+        let minDistance = 0.35; // Relaxed threshold to catch new photos of the same food (different angles/lighting)
+
+        for (const entry of store) {
+            const fp = entry.fingerprint;
+            const hueDist = circularDistance(fingerprint.avgHue, fp.avgHue, 360) / 180;
+            const satDist = Math.abs(fingerprint.avgSat - fp.avgSat);
+            const lightDist = Math.abs(fingerprint.avgLight - fp.avgLight);
+            const texDist = Math.abs(fingerprint.textureDensity - fp.textureDensity);
+            
+            // Texture and color must be heavily matching
+            const distance = (hueDist * 1.5) + satDist + lightDist + texDist;
+            if (distance < minDistance) {
+                minDistance = distance;
+                bestMatch = entry;
+            }
+        }
+
+        return bestMatch ? { label: bestMatch.label, distance: minDistance } : null;
+    } catch {
+        return null;
+    }
+}
+
+async function getVisualFeatureScores(
+    imgElement: HTMLImageElement | HTMLCanvasElement,
+    fingerprintOverride?: VisualFingerprint
+): Promise<Record<string, number>> {
+    const fp = fingerprintOverride || getVisualFingerprint(imgElement);
+    const { avgHue, avgSat, avgLight, colorVariance, textureDensity, roundness } = fp;
 
     // Score each food based on visual similarity to its profile
     const scores: Record<string, number> = {};
@@ -684,19 +806,25 @@ interface PortionCorrectionStore {
     [foodLabel: string]: number[];  // Array of gram values from user corrections
 }
 
+function getCanonicalFoodId(label: string): string {
+    const n = getNutritionByLabel(label);
+    return n ? n.id : label.toLowerCase().trim().replace(/\s+/g, '_');
+}
+
 export function savePortionCorrection(foodLabel: string, grams: number): void {
     try {
+        const canonicalId = getCanonicalFoodId(foodLabel);
         const store: PortionCorrectionStore = JSON.parse(localStorage.getItem(PORTION_STORAGE_KEY) || '{}');
-        if (!store[foodLabel]) {
-            store[foodLabel] = [];
+        if (!store[canonicalId]) {
+            store[canonicalId] = [];
         }
-        store[foodLabel].push(grams);
+        store[canonicalId].push(grams);
         // Keep only the last 10 corrections per food to prevent stale data
-        if (store[foodLabel].length > 10) {
-            store[foodLabel] = store[foodLabel].slice(-10);
+        if (store[canonicalId].length > 10) {
+            store[canonicalId] = store[canonicalId].slice(-10);
         }
         localStorage.setItem(PORTION_STORAGE_KEY, JSON.stringify(store));
-        console.log(`Saved portion correction: ${foodLabel} = ${grams}g (${store[foodLabel].length} samples)`);
+        console.log(`Saved portion correction: ${canonicalId} = ${grams}g (${store[canonicalId].length} samples)`);
     } catch (e) {
         console.warn('Failed to save portion correction:', e);
     }
@@ -704,8 +832,9 @@ export function savePortionCorrection(foodLabel: string, grams: number): void {
 
 export function loadPortionCorrections(foodLabel: string): number[] {
     try {
+        const canonicalId = getCanonicalFoodId(foodLabel);
         const store: PortionCorrectionStore = JSON.parse(localStorage.getItem(PORTION_STORAGE_KEY) || '{}');
-        return store[foodLabel] || [];
+        return store[canonicalId] || [];
     } catch {
         return [];
     }
@@ -785,15 +914,23 @@ export async function teachModel(correctLabel: string, imgElement: HTMLImageElem
     }
 
     const labelLower = correctLabel.toLowerCase();
-    const classIndex = CLASS_LABELS.indexOf(labelLower);
+    let classIndex = CLASS_LABELS.indexOf(labelLower);
 
     if (classIndex === -1) {
-        throw new Error(`Label ${correctLabel} not found in CLASS_LABELS.`);
+        // If the label is in the nutrition DB but not CLASS_LABELS, add it to the search list
+        const nutrition = getNutritionByLabel(correctLabel);
+        if (nutrition) {
+            CLASS_LABELS.push(labelLower);
+            classIndex = CLASS_LABELS.length - 1;
+            console.log(`Dynamic label added to AI tracking: ${labelLower}`);
+        } else {
+            throw new Error(`Label ${correctLabel} not found in database. Please add it first.`);
+        }
     }
 
-    // Attempt to compile the model for training (using Adam optimizer)
+    // Always compile the model for training (using Adam optimizer)
+    // TF.js requires re-compilation after loading to enable the .fit() method
     try {
-        // Find the last trainable Dense layer and unfreeze it
         const layers = customModel.layers;
         const lastLayer = layers[layers.length - 1];
         lastLayer.trainable = true;
@@ -803,9 +940,13 @@ export async function teachModel(correctLabel: string, imgElement: HTMLImageElem
             loss: 'categoricalCrossentropy',
             metrics: ['accuracy'],
         });
+        console.log('Model compiled for training');
     } catch (e) {
         throw new Error(`Model compilation for continuous learning failed: ${e}`);
     }
+
+    // Yield to let the UI update the "Teaching..." toast/spinner
+    await tf.nextFrame();
 
     const inputTensor = preprocessImage(imgElement);
 
@@ -824,13 +965,29 @@ export async function teachModel(correctLabel: string, imgElement: HTMLImageElem
     });
 
     try {
-        // Train for a very short burst (1 epoch) so it learns without catastrophic forgetting
+        // Train aggressively (15 epochs) to ensure the model completely overrides its initial bias for this visual pattern
         await customModel.fit(inputTensor, targetTensor, {
-            epochs: 1,
+            epochs: 15,
             batchSize: 1,
             shuffle: true
         });
-        console.log(`Model successfully fine-tuned for ${correctLabel}`);
+        
+        // Yield again before the heavy save operation
+        await tf.nextFrame();
+        
+        // ─── PERSISTENCE ───
+        // Save the updated model weights to IndexedDB
+        console.time('model_save_indexeddb');
+        await customModel.save(INDEXEDDB_URL);
+        console.timeEnd('model_save_indexeddb');
+        
+        // Save Exact Image Correction Fingerprint
+        saveImageCorrection(imgElement, correctLabel);
+        
+        console.log(`Model successfully fine-tuned and saved to IndexedDB for ${correctLabel}`);
+    } catch (e) {
+        console.error('Fine-tuning failed:', e);
+        throw new Error(`AI learning phase failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
     } finally {
         inputTensor.dispose();
         targetTensor.dispose();

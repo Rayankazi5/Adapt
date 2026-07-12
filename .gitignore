@@ -17,3 +17,8 @@ public/models/
 food-101/
 FoodData_Central_csv_2025-12-18/
 .DS_Store
+.claude/settings.local.json
+public/food_facts.sqlite
+public/adapt_tracking.sqlite
+public/adapt_tracking.sqlite-shm
+public/adapt_tracking.sqlite-wal

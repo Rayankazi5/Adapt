@@ -2,6 +2,7 @@ import { createBrowserRouter } from "react-router-dom";
 import { Dashboard } from "./pages/Dashboard";
 import { CalorieTracking } from "./pages/CalorieTracking";
 import { WorkoutTracking } from "./pages/WorkoutTracking";
+import { Profile } from "./pages/Profile";
 
 export const router = createBrowserRouter([
   {
@@ -15,5 +16,9 @@ export const router = createBrowserRouter([
   {
     path: "/workouts",
     Component: WorkoutTracking,
+  },
+  {
+    path: "/profile",
+    Component: Profile,
   },
 ]);

@@ -61,6 +61,21 @@ export function FoodLogCard({
                     <span>C: {entry.carbs}g</span>
                     <span>F: {entry.fats}g</span>
                   </div>
+                  {(entry.vitamin_a || entry.vitamin_b1 || entry.vitamin_b2 || entry.vitamin_b3 || entry.vitamin_b6 || entry.vitamin_b9 || entry.vitamin_b12 || entry.vitamin_c || entry.vitamin_d || entry.vitamin_e || entry.vitamin_k) ? (
+                    <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground/80">
+                      {entry.vitamin_a ? <span>Vit A: {entry.vitamin_a.toFixed(1)}mcg</span> : null}
+                      {entry.vitamin_b1 ? <span>Vit B1: {entry.vitamin_b1.toFixed(1)}mg</span> : null}
+                      {entry.vitamin_b2 ? <span>Vit B2: {entry.vitamin_b2.toFixed(1)}mg</span> : null}
+                      {entry.vitamin_b3 ? <span>Vit B3: {entry.vitamin_b3.toFixed(1)}mg</span> : null}
+                      {entry.vitamin_b6 ? <span>Vit B6: {entry.vitamin_b6.toFixed(1)}mg</span> : null}
+                      {entry.vitamin_b9 ? <span>Vit B9: {entry.vitamin_b9.toFixed(1)}mcg</span> : null}
+                      {entry.vitamin_b12 ? <span>Vit B12: {entry.vitamin_b12.toFixed(1)}mcg</span> : null}
+                      {entry.vitamin_c ? <span>Vit C: {entry.vitamin_c.toFixed(1)}mg</span> : null}
+                      {entry.vitamin_d ? <span>Vit D: {entry.vitamin_d.toFixed(1)}mcg</span> : null}
+                      {entry.vitamin_e ? <span>Vit E: {entry.vitamin_e.toFixed(1)}mg</span> : null}
+                      {entry.vitamin_k ? <span>Vit K: {entry.vitamin_k.toFixed(1)}mcg</span> : null}
+                    </div>
+                  ) : null}
                 </div>
                 <Button
                   variant="ghost"

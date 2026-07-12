@@ -13,6 +13,17 @@ interface AIFoodScannerProps {
         carbs: number;
         fats: number;
         time: string;
+        vitamin_a?: number;
+        vitamin_b1?: number;
+        vitamin_b2?: number;
+        vitamin_b3?: number;
+        vitamin_b6?: number;
+        vitamin_b9?: number;
+        vitamin_b12?: number;
+        vitamin_c?: number;
+        vitamin_d?: number;
+        vitamin_e?: number;
+        vitamin_k?: number;
     }) => void;
     isProcessing?: boolean;
 }
@@ -157,18 +168,50 @@ export function AIFoodScanner({ onFoodRecognized }: AIFoodScannerProps) {
 
     const handleConfirm = useCallback(() => {
         const result = results[selectedResult];
-        if (!result?.nutrition) return;
+        console.log("handleConfirm triggered! Result: ", result);
+        if (!result?.nutrition) {
+            console.error("Missing nutrition info on result:", result);
+            toast.error("Missing nutrition info for this food.");
+            return;
+        }
 
         const n = result.nutrition;
-        const servings = grams / n.servingSize;
-        onFoodRecognized({
-            name: n.displayName,
-            calories: Math.round(n.calories * servings),
-            protein: Math.round(n.protein * servings),
-            carbs: Math.round(n.carbs * servings),
-            fats: Math.round(n.fats * servings),
-            time: new Date().toTimeString().slice(0, 5),
-        });
+        
+        // Safety guard against NaN
+        const safeGrams = Number.isNaN(grams) ? n.servingSize || 100 : grams;
+        const servings = safeGrams / n.servingSize;
+        
+        console.log(`Adding ${safeGrams}g, servings=${servings}. Nutrition:`, n);
+        
+        try {
+            onFoodRecognized({
+                name: n.displayName,
+                calories: Math.round(n.calories * servings) || 0,
+                protein: Math.round(n.protein * servings) || 0,
+                carbs: Math.round(n.carbs * servings) || 0,
+                fats: Math.round(n.fats * servings) || 0,
+                time: new Date().toTimeString().slice(0, 5),
+                vitamin_a: n.vitamin_a ? (n.vitamin_a * servings) : 0,
+                vitamin_b1: n.vitamin_b1 ? (n.vitamin_b1 * servings) : 0,
+                vitamin_b2: n.vitamin_b2 ? (n.vitamin_b2 * servings) : 0,
+                vitamin_b3: n.vitamin_b3 ? (n.vitamin_b3 * servings) : 0,
+                vitamin_b6: n.vitamin_b6 ? (n.vitamin_b6 * servings) : 0,
+                vitamin_b9: n.vitamin_b9 ? (n.vitamin_b9 * servings) : 0,
+                vitamin_b12: n.vitamin_b12 ? (n.vitamin_b12 * servings) : 0,
+                vitamin_c: n.vitamin_c ? (n.vitamin_c * servings) : 0,
+                vitamin_d: n.vitamin_d ? (n.vitamin_d * servings) : 0,
+                vitamin_e: n.vitamin_e ? (n.vitamin_e * servings) : 0,
+                vitamin_k: n.vitamin_k ? (n.vitamin_k * servings) : 0,
+            });
+            console.log("Successfully called onFoodRecognized!");
+        } catch (e) {
+            console.error("Error calling onFoodRecognized:", e);
+            toast.error("Failed to add food to log.");
+        }
+        
+        // LEARN PORTION SIZE from normal usage logs
+        savePortionCorrection(result.label, safeGrams);
+        
         resetScanner();
     }, [results, selectedResult, grams, onFoodRecognized, resetScanner]);
 
@@ -180,40 +223,53 @@ export function AIFoodScanner({ onFoodRecognized }: AIFoodScannerProps) {
                 await fetch(imagePreview).then(r => r.blob()).then(b => new File([b], 'photo.jpg', { type: 'image/jpeg' }))
             );
 
-            toast?.success('Learning new food classification...');
-            await teachModel(correctName, img);
+            const learningToast = toast.loading(`Teaching AI to recognize ${correctName}...`);
+            
+            try {
+                await teachModel(correctName, img);
+                
+                // Save portion correction if the user provided grams
+                if (portionGrams && portionGrams > 0) {
+                    savePortionCorrection(correctName.toLowerCase(), portionGrams);
+                }
 
-            // Save portion correction if the user provided grams
-            if (portionGrams && portionGrams > 0) {
-                savePortionCorrection(correctName.toLowerCase(), portionGrams);
+                const allNames = getAllFoodNames();
+                const realName = allNames.find(n => n.toLowerCase() === correctName.toLowerCase()) || correctName;
+
+                const nutrition = getNutritionByLabel(realName);
+                const correctedResult: ClassificationResult = {
+                    label: realName.toLowerCase(),
+                    displayName: realName,
+                    confidence: 1.0,
+                    nutrition,
+                    estimatedMultiplier: results[0]?.estimatedMultiplier || 1,
+                    estimatedGrams: portionGrams || results[0]?.estimatedGrams
+                };
+
+                setResults([correctedResult, ...results]);
+                setSelectedResult(0);
+                setIsCorrecting(false);
+                setCorrectionQuery('');
+                setSelectedCorrectionFood(null);
+                setCorrectionGrams('');
+                if (portionGrams) {
+                    setGrams(portionGrams);
+                }
+                
+                toast.dismiss(learningToast);
+                toast.success(`Success! I've learned that this is ${realName}.`, {
+                    description: "This correction is now saved to your device's AI brain.",
+                    duration: 5000,
+                });
+            } catch (trainErr) {
+                toast.dismiss(learningToast);
+                throw trainErr;
             }
-
-            const allNames = getAllFoodNames();
-            const realName = allNames.find(n => n.toLowerCase() === correctName.toLowerCase()) || correctName;
-
-            const nutrition = getNutritionByLabel(realName);
-            const correctedResult: ClassificationResult = {
-                label: realName.toLowerCase(),
-                displayName: realName,
-                confidence: 1.0,
-                nutrition,
-                estimatedMultiplier: results[0]?.estimatedMultiplier || 1,
-                estimatedGrams: portionGrams || results[0]?.estimatedGrams
-            };
-
-            setResults([correctedResult, ...results]);
-            setSelectedResult(0);
-            setIsCorrecting(false);
-            setCorrectionQuery('');
-            setSelectedCorrectionFood(null);
-            setCorrectionGrams('');
-            if (portionGrams) {
-                setGrams(portionGrams);
-            }
-            toast?.success(`AI learnt: ${realName}${portionGrams ? ` at ${portionGrams}g` : ''}!`);
         } catch (e) {
             console.error('Failed to teach model:', e);
-            toast?.error(`Failed to train model: ${e instanceof Error ? e.message : 'Unknown error'}`);
+            toast.error('Training Failed', {
+                description: e instanceof Error ? e.message : 'The AI model could not be updated at this time.',
+            });
         }
     };
 
@@ -279,15 +335,15 @@ export function AIFoodScanner({ onFoodRecognized }: AIFoodScannerProps) {
 
                 {/* Food Categories Preview */}
                 <div className="rounded-xl bg-muted/30 p-3">
-                    <p className="text-xs font-medium text-muted-foreground mb-2">Recognizes 20 Indian food categories:</p>
+                    <p className="text-xs font-medium text-muted-foreground mb-2">Recognizes 101 global & Indian food categories:</p>
                     <div className="flex flex-wrap gap-1.5">
-                        {['Biryani', 'Dosa', 'Idli', 'Samosa', 'Naan', 'Tandoori', 'Halwa', 'Vada Pav', 'Dhokla', 'Poori'].map(food => (
+                        {['Pizza', 'Burger', 'Sushi', 'Biryani', 'Dosa', 'Steak', 'Ramen', 'Pasta', 'Tacos', 'Salad'].map(food => (
                             <span key={food} className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-violet-500/10 text-violet-700 dark:text-violet-300">
                                 {food}
                             </span>
                         ))}
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-muted text-muted-foreground">
-                            +10 more
+                            +91 more
                         </span>
                     </div>
                 </div>
